@@ -1,7 +1,7 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs::File;
-use std::io;
-use std::io::BufRead;
+use std::os::windows::fs::FileExt;
 use std::time;
 
 struct StationData {
@@ -11,6 +11,7 @@ struct StationData {
     counts: f32
 }
 
+const BUFSIZE: usize = 4096 * 32;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -24,15 +25,16 @@ fn main() {
 
     let start_time = time::Instant::now();
     let file = File::open(&filename).unwrap();
-    let line_reader = io::BufReader::with_capacity(1024 * (1024 * 512), file).lines();
-    // let data = fs::read_to_string(&filename).unwrap_or_default();
-    // if data == String::default() {
-    //     println!("no data to be read");
-    //     return;
-    // }
-
+    let mut offset = 0;
     let mut station_map: HashMap<String, StationData> = HashMap::with_capacity(50000);
-    line_reader.for_each(|s| reading_from_str(s.unwrap(), &mut station_map));
+    loop {
+        let count = read_file_between_offsets(&file, offset, &mut station_map).unwrap();
+        if count == 0 {
+            break
+        }
+
+        offset = offset + count as u64;
+    }
 
     let end_time = start_time.elapsed();
 
@@ -41,11 +43,37 @@ fn main() {
     }
 
     println!("{}", filename);
-    // println!("{}", data);
     println!("time elapsed: {}ms", end_time.as_millis());
 }
 
-fn reading_from_str<'a>(string: String, station_map: &mut HashMap<String, StationData>) {
+fn read_file_between_offsets(file: &File, start: u64, station_map: &mut HashMap<String, StationData>) -> Result<usize, Box<dyn Error>> {
+    let mut buf = [0x00; BUFSIZE];
+    let offset = start;
+    let result = file.seek_read(&mut buf, offset)?;
+    if result == 0 || result < 4 {
+        return Ok(0);
+    }
+    let mut bslices: Vec<&[u8]> = buf.split(|&b| b == 0x0a).collect();
+    let mut sub = bslices.last().unwrap().len();
+    if result == sub {
+        reading_from_str(String::from_utf8(bslices.last().unwrap().to_vec())?.as_str(), station_map);
+        return Ok(result);
+    } else if result < sub {
+        sub = 0;
+    }
+    let count = result - sub;
+    bslices.pop();
+    for slice in bslices {
+        reading_from_str(&String::from_utf8_lossy(slice), station_map);
+    }
+    return Ok(count);
+}
+
+fn reading_from_str<'a>(string: &str, station_map: &mut HashMap<String, StationData>) {
+    if string.len() < 4 {
+        return
+    }
+
     let result = string.split_once(';').expect("invalid value in text file");
     let float: f32 = result.1.trim().parse().expect("invalid value in text file");
 
@@ -67,6 +95,5 @@ fn reading_from_str<'a>(string: String, station_map: &mut HashMap<String, Statio
         temp.sum += float;
         temp.counts += 1.0;
     }
-    // println!("time elapsed: 1 {}ns, 2 {}ns, 3 {}ns, total {}ns", time_1, time_2, time_3, start_time.elapsed().as_nanos());
     return
 }
