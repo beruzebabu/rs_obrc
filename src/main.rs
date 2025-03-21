@@ -1,8 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fs::File;
-use std::os::windows::fs::FileExt;
-use std::sync::mpsc::channel;
+use std::io::{Read, Seek};
 use std::thread::{JoinHandle};
 use std::{thread, time};
 
@@ -14,8 +13,8 @@ struct StationData {
     counts: f32
 }
 
-const BUFSIZE: usize = 4096 * 48;
-const MAX_THREADS: usize = 64;
+const BUFSIZE: usize = 4096 * 4096;
+const MAX_THREADS: usize = 256;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -43,7 +42,7 @@ fn main() {
                         min: stationdata.min,
                         max: stationdata.max,
                         sum: stationdata.sum,
-                        counts: 1.0
+                        counts: stationdata.counts
                     });
                 } else {
                     let temp = station_map.get_mut(name.as_str()).unwrap();
@@ -54,13 +53,16 @@ fn main() {
                         temp.max = stationdata.max;
                     }
                     temp.sum += stationdata.sum;
-                    temp.counts += 1.0;
+                    temp.counts += stationdata.counts;
                 }
             }
             active_threads -= 1;
         }
-        let mut buf = [0x00; BUFSIZE];
-        let result = file.seek_read(&mut buf, offset).unwrap();
+        let mut buf: Vec<u8> = Vec::with_capacity(BUFSIZE);
+        let mut cloned_file = file.try_clone().unwrap();
+        cloned_file.seek(std::io::SeekFrom::Start(offset));
+        let mut taker = cloned_file.take(BUFSIZE as u64);
+        let result = taker.read_to_end(&mut buf).unwrap();
         if result < 4 {
             break
         }
@@ -79,7 +81,6 @@ fn main() {
     }
 
     let total_handles = handles.len();
-    println!("{}", total_handles);
 
     for handle in handles {
         let data = handle.join().unwrap();
@@ -89,7 +90,7 @@ fn main() {
                     min: stationdata.min,
                     max: stationdata.max,
                     sum: stationdata.sum,
-                    counts: 1.0
+                    counts: stationdata.counts
                 });
             } else {
                 let temp = station_map.get_mut(name.as_str()).unwrap();
@@ -100,17 +101,18 @@ fn main() {
                     temp.max = stationdata.max;
                 }
                 temp.sum += stationdata.sum;
-                temp.counts += 1.0;
+                temp.counts += stationdata.counts;
             }
         }
     }
 
-    let end_time = start_time.elapsed();
     let mut collection: Vec<(&String, &StationData)> = station_map.iter().map(|s| (s.0, s.1)).collect();
     collection.sort_by(|a, b| a.0.cmp(b.0));
 
+    let end_time = start_time.elapsed();
+
     for item in collection {
-        println!("{} -> min: {}, max: {}, mean: {}", item.0, item.1.min, item.1.max, item.1.sum / item.1.counts);
+        println!("{} -> min: {}, max: {}, mean: {}, sum: {}, count: {}", item.0, item.1.min, item.1.max, item.1.sum / item.1.counts, item.1.sum, item.1.counts);
     }
 
     println!("{}", total_handles);
@@ -123,7 +125,7 @@ fn read_buf_between_offsets(buf: &[u8], station_map: &mut HashMap<String, Statio
     if result == 0 || result < 4 {
         return Ok(0);
     }
-    let mut bslices: Vec<&[u8]> = buf.split(|&b| b == 0x0a).collect();
+    let bslices: Vec<&[u8]> = buf.split(|&b| b == 0x0a).collect();
     for slice in bslices {
         reading_from_str(&String::from_utf8_lossy(slice), station_map);
     }
